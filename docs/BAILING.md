@@ -10,9 +10,9 @@ Two of the three unknowns this port was expected to carry are gone, both because
 natively (`BailingHybridConfig` / `BailingHybridForCausalLM`, pure torch, no `fla`):
 
 - **The attention backward.** `BailingHybridDeltaAttention` is ordinary autograd-able torch, so a layer-major trainer
-  does not have to borrow `fla`'s chunk kernels and does not have to find or write a KDA backward. What it gives up is
-  the chunked form's speed: the reference delta rule carries a `[heads, D, D]` state and steps one token at a time.
-  Batching the recurrence is the work that remains, not differentiating it.
+  does not have to borrow `fla`'s chunk kernels and does not have to find or write a KDA backward. A full-sequence
+  forward takes the chunked form (`chunk_kimi_delta_attention`); its speed against `fla`'s Triton kernels is not
+  measured yet.
 - **The fold.** `ttfconv.arch` discovers the residual rotation as exact for this family (`fold_err` 3.3e-06, gain form
   `w`), so the trainer sees a folded model: norm gains already in the readers, one shared Hadamard on the residual
   stream, no per-branch rotation at decode.
@@ -56,9 +56,8 @@ parameters per token:
 | Ling-3.0-flash | 5.1 B active | ? | — |
 
 Set the budget from a 200-step held-out loss curve rather than from either row. Two factors push in opposite directions:
-this family has no fold-free residual rotation to hide conversion error behind, and its damage is concentrated in 40
-MoE layers whose routing shifts as trits move; against that, each expert sees 1.56% of tokens, so 72 M tokens already
-gives ~1.1 M tokens per expert.
+the conversion damage is concentrated in 40 MoE layers whose routing shifts as trits move; against that, each expert
+sees 1.56% of tokens, so 72 M tokens already gives ~1.1 M tokens per expert.
 
 ## Recipe
 
