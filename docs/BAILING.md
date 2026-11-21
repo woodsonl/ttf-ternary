@@ -17,8 +17,58 @@ natively (`BailingHybridConfig` / `BailingHybridForCausalLM`, pure torch, no `fl
   `w`), so the trainer sees a folded model: norm gains already in the readers, one shared Hadamard on the residual
   stream, no per-branch rotation at decode.
 
-What is still open is the trainer proper: the layer-major loop over 42 layers with the model and the TTF state in host
-memory, the fused-expert grouped GEMMs, and the KD head.
+## What exists
+
+`ttf/bailing/` runs a `ttfconv.bailing.convert` output (`OUT/L{i}.pt`) layer-major, one decoder layer on the device at
+a time, everything else on the host:
+
+- `student.py`: one converted layer as a module. transformers' one-layer shell, `TernLinear` for each dense matrix,
+  two `TernaryExperts` (gate_up, down) for the routed experts run sorted by expert, the rest from `_float`, all loaded
+  strictly. `teacher()` is the Hub layer folded as the converter folds it. `lora=r` adds a rank-r float adapter
+  (A at zero) beside every ternary matrix.
+- `eval.py`: the conversion's held-out windows through every layer, then `convert.eval_loss`'s head; `--prompt` does
+  greedy generation. `--act-bits 0` turns off activation quantisation (the converter's own fake-quantised layer, the
+  number in its `eval.json`); 8 is per-token int8, as the TTF kernels run. CUDA runs bf16, CPU fp32.
+- `train.py`: frozen-trit recovery. Teacher and student read the same input (the student's stream); the student's
+  adapters take one AdamW step per layer per step on `|s - t|^2 / |t - h|^2`; optimizer state lives on the host.
+- `ttf/q38/moe.py`: `act_bits=0` in `TernaryExperts` (padded path only).
+- `tests/test_bailing.py`: a tiny random bailing_hybrid converted on CPU; Stage 1 parity and one adapter-training run.
+
+### Measured on time3
+
+time3 is a conversion of Ling-3.0-tiny (24 layers, 128 experts, hidden 1536; rank 16, seed 777, 4 held-out windows
+of 512 tokens). Workstation, GPU 1 (RTX 4060 Ti 8 GB) or CPU, `PYTHONPATH` set to both repos.
+
+| what | value | command |
+|---|---|---|
+| converter `eval.json` ternary | 3.595355069 | (from the conversion) |
+| converter `eval.json` float | 2.083564 | (from the conversion) |
+| student, CPU fp32, act 0 | 3.595354830 (diff -2.4e-7; final stream rel err 6.6e-7) | `python -m ttf.bailing.eval HF T3 DATA --act-bits 0 --device cpu` |
+| student, CPU fp32, act 8 | 3.602300 | same, `--act-bits 8` |
+| student, GPU bf16, act 0 / act 8 | 3.602889 / 3.605475 | same, `--device cuda` |
+| 200 adapter steps, GPU held-out | 2.922553 | `python -m ttf.bailing.train HF T3 DATA OUT --steps 200 --eval-every 20 --mb 2` |
+| trained adapters, CPU fp32, act 0 | 2.923788 | `python -m ttf.bailing.eval HF T3 DATA --act-bits 0 --adapters OUT --device cpu` |
+| trained adapters, CPU fp32, act 8 | 2.928834 | same, `--act-bits 8` |
+
+The 200 steps (batch 8 x 512 = 819 K tokens, rank 16, 227.3 M adapter parameters, lr 1e-3 to 1e-4 cosine, 33 s a
+step) recover 44% of the ternary-to-float gap (3.5954 to 2.9238 against a float 2.0836). GPU held-out loss by step:
+
+| step | 0 | 20 | 40 | 60 | 80 | 100 | 120 | 140 | 160 | 180 | 200 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| held-out | 3.6035 | 3.2732 | 3.1637 | 3.1100 | 3.0510 | 3.0192 | 2.9559 | 2.9715 | 2.9450 | 2.9320 | 2.9226 |
+
+Mean layer KD loss went 0.2455 (step 1) to 0.1570 (step 200). The curve is still falling at step 200, so the token
+budget stays open. Greedy generation: the folded float teacher through the same path gives "The capital of France is
+Paris."; the untrained ternary student degenerates.
+
+### Unverified
+
+- All numbers above are Ling-3.0-tiny; Ling-3.0-flash and Sante are unrun.
+- `train.py` holds every folded teacher in host memory, which a 127.5 B model exceeds; the flash run needs teachers
+  folded per layer on the fly or a disk cache.
+- KDA runs transformers' reference torch path (`flash-linear-attention` is absent); speed against `fla` is unmeasured.
+- Training ran at act 0; act 8 costs 0.005 nats after training. Training at act 8 is untried.
+- GPU bf16 losses jitter in the fourth decimal (CUDA `index_add` is nondeterministic).
 
 ## Memory: the reason this is not a `q38` copy
 
