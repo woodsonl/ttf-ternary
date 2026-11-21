@@ -108,8 +108,8 @@ def student(cfg, li, blob, dt=torch.float32, lora=0, act_bits=8):
 
 def teacher(rd, cfg, li, rules=None, Q=None, dev="cpu", dt=torch.float32):
     """the Hub's float layer li, folded (rules, Q) as ttfconv.bailing.convert folds it (dev: where the fold runs)"""
-    sd = rd.layer(li)
-    if rules is not None:
+    sd = {k: v.clone() for k, v in rd.layer(li).items()}    # (fold_state works in place; safetensors can hand out
+    if rules is not None:                                     # the same mapped storage on every read)
         C.fold_state(sd, rules[(cfg.layer_types[li], cfg.mlp_layer_types[li])], Q, dev)
     m = C.shell(cfg, li)
     m.layers[0].load_state_dict(sd, strict=True, assign=True)
