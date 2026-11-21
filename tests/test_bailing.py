@@ -71,3 +71,33 @@ def test_adapter_training(conv, tmp_path):
     again = E.main([str(d), str(out), str(d / "data.bin"), "--act-bits", "0", "--adapters", str(tmp_path),
                     "--device", "cpu"])
     assert abs(again - held[-1]) < 1e-4 * held[-1], (again, held)
+
+
+def test_ngram_table(conv):
+    """the n-gram table on a frozen student: gradient distillation lowers the KL and brings the final stream closer to
+    the teacher's on its training windows; the closed form reads back its own buckets at the injection layer; ngram.main
+    runs end to end with full coverage of its own training windows"""
+    from types import SimpleNamespace
+    from ttf.bailing import ngram as NG
+    d, out, ev = conv
+    R = E.Run(str(d), str(out), "cpu")
+    ids = R.held_out(str(d / "data.bin"))
+    n, rules, D, V = R.cfg.num_hidden_layers, C.fold_rules(R.cfg), R.cfg.hidden_size, R.cfg.vocab_size
+    T = [TR.teacher(R.rd, R.cfg, i, rules, R.Q) for i in range(n)]
+    S = [R.layer(i, 0) for i in range(n)]
+    fwd = lambda L, h, tabs, lo, hi: NG.forward(R, L.__getitem__, h, ids, tabs, "cpu", 2, lo, hi)
+    tf, t2 = fwd(T, R.embed(ids), {}, 0, n), fwd(T, R.embed(ids), {}, 0, 2)
+    x0 = fwd(S, R.embed(ids), {}, 0, 2)
+    err = lambda tabs: float((fwd(S, x0.clone(), tabs, 2, n) - tf).norm() / tf.norm())
+    tabs = {2: NG.Table(4096, D, V)}
+    a = SimpleNamespace(seed=0, steps=20, batch=2, mb=2, lr=1e-3, warmup=2, device="cpu")
+    kl = NG.train(R, S, tabs, x0, tf, ids, a, print)
+    assert np.mean(kl[-5:]) < np.mean(kl[:5]), kl
+    assert err(tabs) < err({})
+    tab = NG.Table(4096, D, V).fit(t2, x0, ids, 0.0)
+    assert float((tab.add_to(x0.clone(), ids) - t2).norm()) < 0.9 * float((x0 - t2).norm())
+    res = NG.main([str(d), str(out), str(d / "data.bin"), "--conv-data", str(d / "data.bin"), "--tokens", str(8 * SEQ),
+                   "--hold", str(4 * SEQ), "--eval-windows", "2", "--cfg", "2/4096", "--cfg", "1+4/2048", "--steps", "3",
+                   "--batch", "2", "--lr", "1e-3", "--device", "cpu"])
+    assert len(res) == 2 and res[0]["seen"]["train"] == {2: 1.0, 3: 1.0} and res[0]["hit"]["train"] == {2: 1.0, 3: 1.0}
+    assert all(np.isfinite(v) for r in res for v in r["loss"].values())

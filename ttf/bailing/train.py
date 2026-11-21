@@ -66,6 +66,8 @@ def main(argv=None):
     ap.add_argument("--act-bits", type=int, default=0, help="0: as the conversion's eval.json; 8: int8 activations")
     ap.add_argument("--eval-every", type=int, default=20); ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--layers", type=int, default=0)
+    ap.add_argument("--hold", type=int, default=0, help="tokens at the end of DATA kept out of training (at least the "
+                    "conversion's held-out windows)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--threads", type=int, default=0)
     a = ap.parse_args(argv)
@@ -91,7 +93,7 @@ def main(argv=None):
     log(f"teacher held-out loss {held_loss(T):.6f}")
     data = np.memmap(a.data, dtype=np.uint32, mode="r")
     seq = a.seq or R.meta["seq"]
-    hi = len(data) - R.meta["eval_windows"] * R.meta["seq"] - seq - 1      # (no window reaches the held-out tail)
+    hi = len(data) - max(a.hold, R.meta["eval_windows"] * R.meta["seq"]) - seq - 1     # (no window reaches the tail)
     rng = np.random.default_rng(a.seed)
     curve = []
     for step in range(a.steps + 1):
