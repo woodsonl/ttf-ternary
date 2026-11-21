@@ -66,6 +66,8 @@ Paris."; the untrained ternary student degenerates.
 - All numbers above are Ling-3.0-tiny; Ling-3.0-flash and Sante are unrun.
 - `train.py` holds every folded teacher in host memory, which a 127.5 B model exceeds; the flash run needs teachers
   folded per layer on the fly or a disk cache.
+- `train.py` keeps fp32 adapters and fp32 AdamW moments (12 bytes a parameter before gradients): ~30 GB of host memory
+  for flash's 2.53 B adapter parameters, above the lean-optimizer figure in the memory section.
 - KDA runs transformers' reference torch path (`flash-linear-attention` is absent); speed against `fla` is unmeasured.
 - Training ran at act 0; act 8 costs 0.005 nats after training. Training at act 8 is untried.
 - GPU bf16 losses jitter in the fourth decimal (CUDA `index_add` is nondeterministic).
