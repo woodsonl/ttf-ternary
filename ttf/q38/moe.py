@@ -311,7 +311,10 @@ class _ExpertGemm(torch.autograd.Function):
     @staticmethod
     def forward(ctx, x, mod, pd):
         aq = act_quant_i8_fast if (x.is_cuda and act_quant_i8_fast is not None) else act_quant_i8
-        xq, xs = aq(x.reshape(-1, mod.K), mod.act_bits)
+        if mod.act_bits:
+            xq, xs = aq(x.reshape(-1, mod.K), mod.act_bits)
+        else:      # act_bits 0: no activation quantisation (the converter's fake-quantised float layer; padded path only)
+            xq = x.reshape(-1, mod.K); xs = torch.ones(xq.shape[0], dtype=torch.float32, device=x.device)
         # y = (codes @ T^T) * xs * beta: the codes (|q| <= 128) and trits are exact in bf16 and their products sum
         # exactly in fp32 (K * 128 < 2^24), as the core's int32 GEMM; then the scales in fp32, one rounding (the core's
         # tern_gemm_i8 returns bf16)
@@ -443,7 +446,7 @@ class TernaryExperts(nn.Module):
         return v[idx]
 
     def forward(self, x, offs):
-        if x.is_cuda and GROUPED[0] and GGK is not None:
+        if x.is_cuda and GROUPED[0] and GGK is not None and self.act_bits:
             # (E = 1, offsets [0, T] from the host: one cached _Grp per T, no host -> device copy per call)
             pd = _grp1(x.shape[0], x.device) if self.E == 1 and not torch.is_tensor(offs) else \
                 _Grp(offs, self.E, x.device, x.shape[0])
