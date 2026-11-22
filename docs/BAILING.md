@@ -101,7 +101,9 @@ Paris."; the untrained ternary student degenerates.
 | EXL3 1.66 bpw | table 2+8+14+20, lr 1e-2 | 3.07 B | 2.601 | 2.509 | 2.752 | -31% / 37% / 17% |
 | EXL3 1.66 bpw | table 2+8+14+20, lr 1e-3 | 3.07 B | 2.405 | 2.418 | 2.483 | 19% / 61% / 91% |
 
-Every trained row used 819,200 tokens (the adapters: `train.py --steps 200 --mb 2 --hold` on the same wiki prefix).
+Every trained row used 819,200 tokens. The adapters: `python -m ttf.bailing.train HF T3 WIKI OUT --steps 200
+--eval-every 50 --mb 2 --hold 3180854` (wiki.bin's 4,000,054 tokens less 819,200), 200 steps of 8 random windows of
+512 from the same 819,200-token prefix. Closed form: `--steps 0 --cfg 2/2000000/1 --cfg 20/2000000/1`.
 Coverage, the share of eval positions whose n-gram occurs in training ("seen") and whose bucket a training n-gram
 touched ("hit", collisions included), 2-gram / 3-gram:
 
@@ -130,6 +132,11 @@ Unverified for the table:
 - lr 1e-2 was chosen for the ternary student and never swept there; on EXL3 lr 1e-3 beat it on every set, so the
   ternary rows may also be under-tuned.
 - One seed, one token budget (819,200), one epoch; collisions between rows are not separated from generalization.
+- The 2+8+14+20 configuration was picked by lowest tail loss and lr 1e-3 after seeing held-out results; conv is the
+  only set nothing was selected on.
+- The recipes differ beyond the token count: the adapters train layerwise on `|s - t|^2 / |t - h|^2` at lr 1e-3 to
+  1e-4 cosine, the table end to end on KL at lr 1e-2 (or 1e-3) with warmup and cosine decay.
+- The decoded EXL3 student is checked only by per-layer weight error, not against ExLlamaV3's own inference loss.
 - The adapters and the table see the same tokens but differ 13x in parameters; a parameter-matched comparison is unrun.
 - Ling-3.0-flash and Sante are unrun; table memory (3.07 B fp32 rows plus Adam state, on the host) scales with rows,
   not with the model.
