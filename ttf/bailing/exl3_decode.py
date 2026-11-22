@@ -30,13 +30,14 @@ def decode(hf, exl, out, dev="cuda"):
     os.makedirs(out, exist_ok=True)
     wmap, n = {}, 1 + max(int(k.split(".")[2]) for k in hub if k.startswith("model.layers."))
     for li in range(n):
-        pre, sd = f"model.layers.{li}.", {}
+        pre, sd, dec = f"model.layers.{li}.", {}, set()
         for k in sorted(x for x in src if x.startswith(pre)):
             if k.endswith(".trellis"):
                 key = k[:-len(".trellis")]
                 t = {s: get(f"{key}.{s}").to(dev) for s in ("trellis", "suh", "svh", "mul1", "mcg") if f"{key}.{s}" in src}
                 lin = LinearEXL3(None, t["suh"].numel(), t["svh"].numel(), key=key, **t)
                 sd[key + ".weight"] = lin.get_weight_tensor().T.float().cpu()
+                dec.add(key + ".weight")
             elif not k.endswith((".suh", ".svh", ".mul1", ".mcg")):
                 sd[k] = get(k)
         for f, parts in SPLIT.items():
@@ -46,13 +47,18 @@ def decode(hf, exl, out, dev="cuda"):
             sizes = [ref(pre + p).shape[0] for p in parts]
             for p, v in zip(parts, sd.pop(k).split(sizes, 0)):
                 sd[pre + p] = v.reshape(ref(pre + p).shape)
+                if k in dec:
+                    dec.add(pre + p)
         want = {k for k in hub if k.startswith(pre)}
         assert set(sd) == want, (li, sorted(set(sd) ^ want)[:8])
         err, num = 0.0, 0.0
         for k in sd:
             r = ref(k)
+            if sd[k].shape != r.shape:  # EXL3 pads a linear's output features (576 to 640) with zero rows
+                assert sd[k].ndim == r.ndim and all(a >= b for a, b in zip(sd[k].shape, r.shape)), (k, sd[k].shape)
+                sd[k] = sd[k][tuple(slice(0, b) for b in r.shape)]
             sd[k] = sd[k].to(r.dtype).contiguous()
-            if k.endswith("proj.weight"):
+            if k in dec:
                 err, num = err + float((sd[k].float() - r.float()).pow(2).sum()), num + float(r.float().pow(2).sum())
         f = f"model-L{li}.safetensors"
         save_file(sd, os.path.join(out, f), metadata={"format": "pt"})
